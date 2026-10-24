@@ -281,11 +281,20 @@ const evidence = {
   amount: input.amount,
   attempts: result.attempts.map(({ encryptedRaw, ...a }) => a),
   deployment,
+  receipts: await Promise.all(
+    result.attempts
+      .filter((a) => a.hash)
+      .map((a) => client.getTransactionReceipt({ hash: a.hash })),
+  ),
 };
 await mkdir(new URL("../.local/", import.meta.url), { recursive: true });
 await writeFile(
   new URL("../.local/fork-evidence.json", import.meta.url),
-  JSON.stringify(evidence, null, 2),
+  JSON.stringify(
+    evidence,
+    (_key, value) => (typeof value === "bigint" ? String(value) : value),
+    2,
+  ),
 );
 await store.pool.end();
 console.log(
