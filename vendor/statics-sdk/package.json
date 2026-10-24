@@ -1,0 +1,26 @@
+{
+  "name": "@statics-protocol/sdk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./genesis-credit": {
+      "types": "./dist/genesis-credit.d.ts",
+      "import": "./dist/genesis-credit.js"
+    },
+    "./phase-one": {
+      "types": "./dist/phase-one/index.d.ts",
+      "import": "./dist/phase-one/index.js"
+    }
+  },
+  "peerDependencies": {
+    "viem": ">=2.0.0"
+  },
+  "license": "BUSL-1.1"
+}
