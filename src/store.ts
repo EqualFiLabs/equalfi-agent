@@ -14,6 +14,15 @@ import {
 } from "./contracts.js";
 
 export class Store {
+  async rateLimit(identity: Identity) {
+    const minute = Math.floor(Date.now() / 60_000);
+    const result = await this.pool.query(
+      "INSERT INTO agent_rate_limits(scope,minute,requests) VALUES($1,$2,1) ON CONFLICT(scope,minute) DO UPDATE SET requests=agent_rate_limits.requests+1 WHERE agent_rate_limits.requests<120 RETURNING requests",
+      [identity.userId, minute],
+    );
+    assert(result.rowCount, "request_rate_limit");
+  }
+
   readonly pool: pg.Pool;
   constructor(url: string) {
     this.pool = new pg.Pool({

@@ -56,7 +56,7 @@ describe.skipIf(!database)("PostgreSQL workflow and authority", () => {
   });
   beforeEach(async () => {
     await store.pool.query(
-      "TRUNCATE agent_events,agent_reservations,agent_actions,agent_policies,agent_budgets,agent_messages,agent_conversations,agent_usage RESTART IDENTITY CASCADE",
+      "TRUNCATE agent_events,agent_reservations,agent_actions,agent_policies,agent_budgets,agent_messages,agent_conversations,agent_usage,agent_rate_limits RESTART IDENTITY CASCADE",
     );
     await store.setPolicy(identity, 31337, "*", global);
     await store.setPolicy(identity, 31337, "statics", {
@@ -273,5 +273,128 @@ describe.skipIf(!database)("PostgreSQL workflow and authority", () => {
     expect(signer.sign).toHaveBeenCalledTimes(1);
     expect((await store.get(a.id)).attempts[0].status).toBe("confirmed");
     expect((await store.get(a.id)).status).toBe("blocked");
+  });
+  it("cancels manual reservations without stranding the wallet or budget", async () => {
+    const { a, executor, adapter, signer } = await execution();
+    const manual = await store.get(a.id);
+    manual.mode = "manual";
+    await store.transaction((c) => store.save(c, manual));
+    await executor.run(a.id);
+    expect((await store.get(a.id)).status).toBe("awaiting_manual");
+    const api = new Api(store, adapter, { verify: async () => identity });
+    await api.route("POST", `/v1/actions/${a.id}/cancel`, new Headers(), {});
+    await executor.run(a.id);
+    const cancelled = await store.get(a.id);
+    expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.attempts[0].status).toBe("cancelled");
+    expect(signer.sign).not.toHaveBeenCalled();
+    const budget = await store.pool.query(
+      "SELECT sum(reserved)::text AS reserved FROM agent_budgets",
+    );
+    expect(budget.rows[0].reserved).toBe("0");
+    const second = await store.create(
+      identity,
+      "after-cancel",
+      "delegated",
+      await adapter.prepare({ ...input, wallet: identity.wallet }),
+    );
+    await executor.run(second.id);
+    expect((await store.get(second.id)).status).toBe("reconciling");
+  });
+  it("cancels a proposal without executing it", async () => {
+    const { adapter } = await execution();
+    const a = await store.create(
+      identity,
+      "proposal",
+      "proposal",
+      await adapter.prepare({ ...input, wallet: identity.wallet }),
+    );
+    const api = new Api(store, adapter, { verify: async () => identity });
+    await api.route("POST", `/v1/actions/${a.id}/cancel`, new Headers(), {});
+    const executor = new Executor(
+      store,
+      adapter,
+      new TransactionVault(Buffer.alloc(32)),
+      { sign: vi.fn() },
+      () => true,
+    );
+    await executor.run(a.id);
+    expect((await store.get(a.id)).status).toBe("cancelled");
+  });
+  it("rejects replacement payloads and preserves idempotent API intent identity", async () => {
+    const { adapter } = await execution();
+    const api = new Api(store, adapter, { verify: async () => identity });
+    const body = {
+      intentKey: "api",
+      mode: "proposal",
+      input: { ...input, wallet: identity.wallet },
+    };
+    const a = await api.create(identity, body);
+    expect((await api.create(identity, body)).id).toBe(a.id);
+    await expect(
+      api.route("POST", `/v1/actions/${a.id}/execute`, new Headers(), {
+        planDigest: a.plan.digest,
+        mode: "manual",
+        to: identity.wallet,
+      }),
+    ).rejects.toThrow();
+    await expect(
+      api.activate(identity, a.id, "stale", "manual"),
+    ).rejects.toThrow("revision_conflict");
+    const other = new Api(store, adapter, {
+      verify: async () => ({ ...identity, appId: "eves" }),
+    });
+    await expect(
+      other.route("GET", `/v1/actions/${a.id}`, new Headers(), {}),
+    ).rejects.toThrow("not_found");
+  });
+  it("keeps consumed nonces unresolved until a canonical replacement is observed", async () => {
+    const { a, executor, client, signer } = await execution();
+    await executor.run(a.id);
+    client.getTransactionCount.mockResolvedValue(1);
+    client.getBlock.mockResolvedValue({
+      hash: `0x${"aa".repeat(32)}`,
+      transactions: [],
+    } as never);
+    await executor.run(a.id);
+    expect((await store.get(a.id)).status).toBe("reconciling");
+    expect(signer.sign).toHaveBeenCalledOnce();
+  });
+  it("establishes a different canonical nonce replacement without charging staking principal", async () => {
+    const { a, executor, client, receipt } = await execution();
+    await executor.run(a.id);
+    const hash = `0x${"bb".repeat(32)}` as Hex;
+    client.getTransactionCount.mockResolvedValue(1);
+    client.getBlock.mockResolvedValue({
+      hash: `0x${"aa".repeat(32)}`,
+      transactions: [
+        {
+          from: identity.wallet,
+          nonce: 0,
+          to: identity.wallet,
+          input: "0x",
+          value: 0n,
+          hash,
+        },
+      ],
+    } as never);
+    receipt.mockImplementation(async (args?: unknown) => {
+      if ((args as { hash: Hex })?.hash !== hash) throw new Error("missing");
+      return { blockHash: `0x${"aa".repeat(32)}` } as TransactionReceipt;
+    });
+    await executor.run(a.id);
+    expect((await store.get(a.id)).reason).toBe(
+      "nonce_replaced_by_different_transaction",
+    );
+    const budgets = await store.pool.query(
+      "SELECT sum(reserved+spent)::text AS total FROM agent_budgets WHERE asset='STATICS'",
+    );
+    expect(budgets.rows[0].total).toBe("0");
+  });
+  it("shares request throttling across apps for one identity", async () => {
+    for (let i = 0; i < 120; i++) await store.rateLimit(identity);
+    await expect(
+      store.rateLimit({ ...identity, appId: "eves" }),
+    ).rejects.toThrow("request_rate_limit");
   });
 });

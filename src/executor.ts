@@ -85,7 +85,7 @@ export class Executor {
           ["completed", "failed", "cancelled", "needs_input"].includes(
             action.status,
           ) ||
-          action.mode === "proposal"
+          (action.mode === "proposal" && !action.cancelRequested)
         )
           return action;
         for (const step of action.plan.steps) {
@@ -100,7 +100,10 @@ export class Executor {
           if (action.cancelRequested) {
             action.status = "cancelled";
             await atomic(c, async () => {
-              if (attempt) await this.store.settle(c, action, step, "0", "0");
+              if (attempt) {
+                await this.store.settle(c, action, step, "0", "0");
+                attempt.status = "cancelled";
+              }
               await this.store.save(c, action);
             });
             return action;
@@ -238,6 +241,7 @@ export class Executor {
     if (attempt.status === "signed" && action.cancelRequested) {
       // The submission marker is committed before broadcasting. A signed-only attempt has never left this service.
       action.status = "cancelled";
+      attempt.status = "cancelled";
       await atomic(c, async () => {
         await this.store.settle(c, action, step, "0", "0");
         await this.store.save(c, action);

@@ -57,12 +57,7 @@ export class Authentication {
     assert(this.pilots.has(claims.user_id), "pilot_access_required");
     const user = await this.privy.users()._get(claims.user_id);
     const userId = `${this.privyAppId}/${claims.user_id}`;
-    if (!wallet)
-      return {
-        userId,
-        appId,
-        wallet: "0x0000000000000000000000000000000000000000",
-      };
+    assert(wallet, "wallet_context_required");
     const target = address.parse(wallet);
     const linked = user.linked_accounts.find(
       (a) =>
@@ -78,7 +73,12 @@ export class Authentication {
       appId,
       wallet: target,
       privyWalletId:
-        "id" in linked && typeof linked.id === "string" ? linked.id : undefined,
+        "wallet_client_type" in linked &&
+        linked.wallet_client_type === "privy" &&
+        "id" in linked &&
+        typeof linked.id === "string"
+          ? linked.id
+          : undefined,
     };
   }
 }
@@ -104,6 +104,8 @@ export class PrivySigner implements Signer {
       user.linked_accounts.some(
         (a) =>
           a.type === "wallet" &&
+          "wallet_client_type" in a &&
+          a.wallet_client_type === "privy" &&
           "id" in a &&
           a.id === identity.privyWalletId &&
           "address" in a &&

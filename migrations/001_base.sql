@@ -41,3 +41,8 @@ CREATE TABLE IF NOT EXISTS agent_usage (
  scope text NOT NULL, day date NOT NULL, reserved numeric NOT NULL DEFAULT 0,
  spent numeric NOT NULL DEFAULT 0, PRIMARY KEY(scope,day)
 );
+
+CREATE TABLE IF NOT EXISTS agent_rate_limits (
+ scope text NOT NULL, minute bigint NOT NULL, requests integer NOT NULL,
+ PRIMARY KEY(scope,minute)
+);

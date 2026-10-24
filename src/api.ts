@@ -108,6 +108,7 @@ export class Api {
       headers,
       headers.get("x-agent-wallet") ?? undefined,
     );
+    await this.store.rateLimit(identity);
     if (path === "/v1/read" && method === "POST") {
       assert(identity.appId === "statics", "app_capability_not_registered");
       const body = z
@@ -268,7 +269,9 @@ export class Api {
             );
             fresh.cancelRequested = true;
             fresh.status = fresh.attempts.some(
-              (a) => a.hash && !["confirmed", "reverted"].includes(a.status),
+              (a) =>
+                a.hash &&
+                !["confirmed", "reverted", "cancelled"].includes(a.status),
             )
               ? "reconciling"
               : "running";
@@ -276,7 +279,8 @@ export class Api {
             z.object({}).strict().parse(raw);
             assert(
               !fresh.attempts.some(
-                (a) => !["confirmed", "reverted"].includes(a.status),
+                (a) =>
+                  !["confirmed", "reverted", "cancelled"].includes(a.status),
               ),
               "unresolved_attempt_prevents_reprepare",
             );

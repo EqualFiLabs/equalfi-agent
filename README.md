@@ -23,3 +23,7 @@ The reviewed Statics SDK is vendored from the Statics app. Its upstream provenan
 
 Execution starts disabled. A passing mocked test is not evidence of Privy signing, fork execution,
 production deployment, source-to-runtime provenance, or independent audit assurance.
+
+See [architecture](docs/architecture.md) for action/state/authority contracts and
+[operations](docs/operations.md) for deployment, pause/drain, backup and enablement gates.
+Use separate API and worker environments. Production execution remains disabled.

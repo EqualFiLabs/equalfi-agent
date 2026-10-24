@@ -86,6 +86,7 @@ export type Attempt = {
     | "submitted"
     | "confirmed"
     | "reverted"
+    | "cancelled"
     | "unresolved";
   nonce: number;
   hash?: Hex;

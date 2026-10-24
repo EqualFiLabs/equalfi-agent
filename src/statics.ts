@@ -81,6 +81,7 @@ export class StaticsAdapter {
           return [
             d.id,
             createPublicClient({
+              cacheTime: 0,
               transport: http(rpc, { timeout: 15_000, retryCount: 1 }),
             }) as PublicClient,
           ];
@@ -386,6 +387,10 @@ export class StaticsAdapter {
     assert(receipt.status === "success", "transaction_reverted");
     const d = plan.deployment,
       client = this.client(d.id);
+    assert(
+      (await client.getChainId()) === plan.chainId,
+      "recovery_chain_mismatch",
+    );
     if (step.kind === "approval") {
       const logs = parseEventLogs({
         abi: erc20Abi,
