@@ -11,7 +11,7 @@ await writeFile(
   JSON.stringify(
     {
       name: "@equalfi/agent-client",
-      version: "0.1.1",
+      version: "0.1.2",
       type: "module",
       exports: { ".": { types: "./index.d.ts", import: "./index.js" } },
       files: ["index.js", "index.d.ts"],

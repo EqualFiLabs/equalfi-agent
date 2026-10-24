@@ -67,11 +67,12 @@ export async function fetchPage(
           lookup: (_host, _opts, callback) => callback(null, ips[0], 4),
         },
         (res) => {
+          res.on("error", reject);
           if (
             res.statusCode &&
             [301, 302, 303, 307, 308].includes(res.statusCode)
           ) {
-            res.resume();
+            res.destroy();
             resolve({ location: res.headers.location });
             return;
           }

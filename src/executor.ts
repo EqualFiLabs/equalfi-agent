@@ -238,6 +238,10 @@ export class Executor {
   }
   async reconcile(c: PoolClient, action: Action, step: Step, attempt: Attempt) {
     const client = this.adapter.client(action.plan.deploymentId);
+    assert(
+      (await client.getChainId()) === action.plan.chainId,
+      "recovery_chain_mismatch",
+    );
     if (attempt.status === "signed" && action.cancelRequested) {
       // The submission marker is committed before broadcasting. A signed-only attempt has never left this service.
       action.status = "cancelled";
@@ -246,6 +250,17 @@ export class Executor {
         await this.store.settle(c, action, step, "0", "0");
         await this.store.save(c, action);
       });
+      return false;
+    }
+    if (attempt.status === "signed") {
+      // No submission marker exists: preserve the safely cancelable signed-only state.
+      try {
+        await this.broadcast(c, action, step, attempt);
+      } catch {
+        action.status = "reconciling";
+        action.reason = "signed_submission_blocked";
+        await atomic(c, () => this.store.save(c, action));
+      }
       return false;
     }
     let receipt;

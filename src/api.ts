@@ -155,8 +155,20 @@ export class Api {
       };
     if (path === "/v1/actions" && method === "POST")
       return publicAction(await this.create(identity, raw));
-    if (path === "/v1/actions" && method === "GET")
-      return this.store.list(identity);
+    if (
+      new URL(path, "http://local").pathname === "/v1/actions" &&
+      method === "GET"
+    )
+      return this.store.list(
+        identity,
+        z.coerce.number().int().positive().parse(headers.get("x-agent-chain")),
+        z.coerce
+          .number()
+          .int()
+          .min(0)
+          .max(10000)
+          .parse(new URL(path, "http://local").searchParams.get("page") ?? 0),
+      );
     const url = new URL(path, "http://local"),
       eventCursor = url.searchParams.get("after") ?? "0";
     if (url.pathname === "/v1/events" && method === "GET") {
@@ -287,6 +299,12 @@ export class Api {
             assert(
               !["completed", "failed", "cancelled"].includes(fresh.status),
               "terminal_action",
+            );
+            assert(
+              !fresh.attempts.some(
+                (a) => a.status === "confirmed" && a.stepId.startsWith("stake"),
+              ),
+              "stake_already_confirmed",
             );
             // Prior immutable plans remain in the event log; exact input/limits do not change.
             fresh.plan = await this.adapter.prepare(fresh.plan.input);

@@ -41,6 +41,10 @@ const deploymentSchema = z
     tokenHash: hash,
     protocolCommit: z.string().regex(/^[a-f0-9]{40}$/),
     sdkCommit: z.string().regex(/^[a-f0-9]{40}$/),
+    dependencies: z
+      .array(z.object({ address, runtimeHash: hash }).strict())
+      .max(20)
+      .optional(),
     facets: z
       .array(
         z.object({
@@ -49,7 +53,7 @@ const deploymentSchema = z
           runtimeHash: hash,
         }),
       )
-      .min(3),
+      .min(4),
   })
   .strict();
 export type Deployment = z.infer<typeof deploymentSchema>;
@@ -57,7 +61,16 @@ export const requiredSelectors = [
   "stake(uint256,uint256)",
   "stakePosition(uint256)",
   "ownerOf(uint256)",
+  "syncMorphoForModule(uint256,address)",
 ].map(toFunctionSelector);
+export function delegateTarget(code: Hex): Address | undefined {
+  const match =
+    code.match(/^0xef0100([a-f0-9]{40})$/i) ??
+    code.match(
+      /^0x(?:363d3d373d3d3d363d|3d3d3d3d363d3d37363d)73([a-f0-9]{40})5af4/i,
+    );
+  return match?.[1] ? (`0x${match[1].toLowerCase()}` as Address) : undefined;
+}
 export class StaticsAdapter {
   constructor(
     readonly deployments: Deployment[],
@@ -111,9 +124,17 @@ export class StaticsAdapter {
     for (const [target, expected] of [
       [d.diamond, d.diamondHash],
       [d.token, d.tokenHash],
+      ...(d.dependencies ?? []).map(
+        (dep) => [dep.address, dep.runtimeHash] as const,
+      ),
     ] as const) {
       const code = await client.getCode({ address: target, blockNumber });
       assert(code && keccak256(code) === expected, "contract_runtime_changed");
+      const delegate = delegateTarget(code);
+      assert(
+        !delegate || d.dependencies?.some((dep) => dep.address === delegate),
+        "token_implementation_provenance_missing",
+      );
     }
     for (const f of d.facets) {
       const actual = await client.readContract({
@@ -124,6 +145,13 @@ export class StaticsAdapter {
         blockNumber,
       });
       assert(actual.toLowerCase() === f.address, "facet_selector_changed");
+      if (f.address === "0x0000000000000000000000000000000000000000") {
+        assert(
+          f.runtimeHash === keccak256("0x"),
+          "absent_facet_provenance_invalid",
+        );
+        continue;
+      }
       const code = await client.getCode({ address: f.address, blockNumber });
       assert(
         code && keccak256(code) === f.runtimeHash,

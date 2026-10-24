@@ -13,7 +13,14 @@ import {
   type Deployment,
 } from "../src/statics.js";
 import { digest, stakeInput } from "../src/contracts.js";
-import { fixture, input, diamond, token, wallet } from "./fixtures.js";
+import {
+  fixture,
+  input,
+  diamond,
+  token,
+  wallet,
+  deployment,
+} from "./fixtures.js";
 describe("canonical Statics action", () => {
   it("builds a bounded exact approval and pins complete provenance", async () => {
     const { adapter } = fixture();
@@ -91,5 +98,32 @@ describe("canonical Statics action", () => {
     expect((await adapter.verify(plan, plan.steps[0], receipt)).amount).toBe(
       "100",
     );
+  });
+  it("requires pinned transitive route and token implementation provenance", async () => {
+    const f = fixture(100n);
+    const missing = new StaticsAdapter(
+      [{ ...deployment, facets: deployment.facets.slice(0, 3) }],
+      f.adapter.clients,
+    );
+    await expect(missing.prepare(input)).rejects.toThrow("selector_provenance");
+    const clone =
+      "0x3d3d3d3d363d3d37363d733be8b97fd0e713b5abe0649fa830223b6b4bc5995af43d3d93803e602a57fd5bf3" as const;
+    const changed: Deployment = { ...deployment, tokenHash: keccak256(clone) };
+    f.client.getCode.mockImplementation(async (args?: unknown) =>
+      (args as { address: string })?.address === token ? clone : "0x01",
+    );
+    const adapter = new StaticsAdapter([changed], f.adapter.clients);
+    await expect(adapter.prepare(input)).rejects.toThrow(
+      "implementation_provenance_missing",
+    );
+    changed.dependencies = [
+      {
+        address: "0x3be8b97fd0e713b5abe0649fa830223b6b4bc599" as const,
+        runtimeHash: keccak256("0x01"),
+      },
+    ];
+    await expect(adapter.prepare(input)).resolves.toMatchObject({
+      deploymentId: "fixture",
+    });
   });
 });

@@ -397,4 +397,94 @@ describe.skipIf(!database)("PostgreSQL workflow and authority", () => {
       store.rateLimit({ ...identity, appId: "eves" }),
     ).rejects.toThrow("request_rate_limit");
   });
+  it("keeps signed-only attempts cancelable when submission is blocked", async () => {
+    const { a, executor } = await execution();
+    const original = executor.broadcast.bind(executor);
+    executor.broadcast = async () => {
+      throw new Error("execution_paused");
+    };
+    await executor.run(a.id);
+    expect((await store.get(a.id)).attempts[0].status).toBe("signed");
+    await executor.run(a.id);
+    expect((await store.get(a.id)).attempts[0].status).toBe("signed");
+    executor.broadcast = original;
+    const fresh = await store.get(a.id);
+    fresh.cancelRequested = true;
+    await store.transaction((c) => store.save(c, fresh));
+    await executor.run(a.id);
+    expect((await store.get(a.id)).status).toBe("cancelled");
+    expect((await store.get(a.id)).attempts[0].status).toBe("cancelled");
+  });
+  it("refuses receipt and nonce evidence from another chain", async () => {
+    const { a, executor, client } = await execution();
+    await executor.run(a.id);
+    const hash = (await store.get(a.id)).attempts[0].hash;
+    client.getChainId.mockResolvedValue(1);
+    await expect(executor.run(a.id)).rejects.toThrow("recovery_chain_mismatch");
+    expect((await store.get(a.id)).attempts[0].hash).toBe(hash);
+    expect((await store.get(a.id)).status).toBe("reconciling");
+  });
+  it("charges settlement-day principal and fees after a UTC rollover", async () => {
+    const a = await action("rollover"),
+      step = a.plan.steps[0];
+    await store.transaction((c) => store.authorize(c, a, step, true));
+    await store.pool.query("UPDATE agent_budgets SET day=day-1");
+    await store.pool.query("UPDATE agent_reservations SET day=day-1");
+    await store.transaction((c) => store.settle(c, a, step, "100", "240"));
+    const current = await store.pool.query(
+      "SELECT asset,spent::text,reserved::text FROM agent_budgets WHERE scope='*' AND day=(now() AT TIME ZONE 'UTC')::date ORDER BY asset",
+    );
+    expect(current.rows).toEqual([
+      { asset: "STATICS", spent: "100", reserved: "0" },
+      { asset: "native-fees", spent: "240", reserved: "0" },
+    ]);
+    const old = await store.pool.query(
+      "SELECT sum(reserved+spent)::text AS total FROM agent_budgets WHERE day<(now() AT TIME ZONE 'UTC')::date",
+    );
+    expect(old.rows[0].total).toBe("0");
+    const second = await action("after-midnight");
+    await expect(
+      store.transaction((c) =>
+        store.authorize(c, second, second.plan.steps[0], true),
+      ),
+    ).rejects.toThrow("aggregate_budget_exceeded");
+  });
+  it("publishes event cursors in commit order", async () => {
+    const a = await action("event-a"),
+      b = await action("event-b");
+    const left = await store.pool.connect(),
+      right = await store.pool.connect();
+    try {
+      await left.query("BEGIN");
+      await right.query("BEGIN");
+      await store.event(left, a);
+      let published = false;
+      const later = store.event(right, b).then(() => {
+        published = true;
+      });
+      await new Promise((r) => setTimeout(r, 30));
+      expect(published).toBe(false);
+      await left.query("COMMIT");
+      await later;
+      await right.query("COMMIT");
+      const events = await store.events(identity, 0);
+      expect(events.slice(-2).map((e) => e.body.id)).toEqual([a.id, b.id]);
+    } finally {
+      await left.query("ROLLBACK");
+      await right.query("ROLLBACK");
+      left.release();
+      right.release();
+    }
+  });
+  it("retains every nonterminal workflow beyond fifty newer actions", async () => {
+    const { a, executor } = await execution();
+    await executor.run(a.id);
+    for (let i = 0; i < 55; i++) await action(`new-proposal-${i}`);
+    const list = await store.list(identity, 31337);
+    expect(list.some((item) => item.id === a.id)).toBe(true);
+    expect(list).toHaveLength(56);
+    expect(
+      await store.list({ ...identity, wallet: input.wallet }, 31337),
+    ).toEqual([]);
+  });
 });

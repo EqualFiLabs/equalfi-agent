@@ -10,6 +10,7 @@ import {
   type Identity,
 } from "./contracts.js";
 import type { Api } from "./api.js";
+import { originalStakeIntent, mayExecuteChatStake } from "./intent.js";
 import { fetchPage, searchWeb } from "./research.js";
 
 const messageInput = z
@@ -132,6 +133,11 @@ export class AgentChat {
         }
       });
       reserved = true;
+      const originalIntent = originalStakeIntent(
+        input.text,
+        identity,
+        this.api.adapter.deployments.map((d) => d.id),
+      );
       let researchCalls = 0,
         readCalls = 0;
       const researchBudget = () =>
@@ -140,7 +146,7 @@ export class AgentChat {
         stake: createTool({
           id: "statics-stake-existing",
           description:
-            "Stake the user's exact requested STATICS amount in their explicitly identified owned position. Never infer a position, fee cap or amount. Do not call for hypothetical requests.",
+            "For automatic execution, the original user request must exactly match: Stake <amount> STATICS in position <id> with maximum network fee <fee> ETH per transaction [on deployment <id>]. Other requests produce proposals only. Stake the user's exact requested STATICS amount in their explicitly identified owned position. Never infer a position, fee cap or amount. Do not call for hypothetical requests.",
           inputSchema: stakeInput.omit({ wallet: true }),
           execute: async (args) => {
             const grant = await store.transaction((c) =>
@@ -151,7 +157,14 @@ export class AgentChat {
                 identity.appId,
               ),
             );
-            const mode = grant?.body.active ? "delegated" : "proposal";
+            const mode =
+              grant?.body.active &&
+              mayExecuteChatStake(originalIntent, {
+                ...args,
+                wallet: identity.wallet,
+              })
+                ? "delegated"
+                : "proposal";
             const action = await this.api.create(identity, {
               intentKey: `message:${id}:stake`,
               mode,

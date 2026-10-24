@@ -18,7 +18,11 @@ import {
   staticsAbi,
 } from "@statics-protocol/sdk/phase-one";
 import { Store } from "../dist/src/store.js";
-import { StaticsAdapter, requiredSelectors } from "../dist/src/statics.js";
+import {
+  StaticsAdapter,
+  requiredSelectors,
+  delegateTarget,
+} from "../dist/src/statics.js";
 import { Executor } from "../dist/src/executor.js";
 import { TransactionVault } from "../dist/src/crypto.js";
 
@@ -62,7 +66,7 @@ for (const selector of requiredSelectors) {
   facets.push({
     selector,
     address,
-    runtimeHash: keccak256(await client.getCode({ address })),
+    runtimeHash: keccak256((await client.getCode({ address })) ?? "0x"),
   });
 }
 const deployment = {
@@ -77,7 +81,17 @@ const deployment = {
   protocolCommit: manifest.protocolCommit,
   sdkCommit: manifest.sdkCommit,
   facets,
+  dependencies: [],
 };
+let dependency = delegateTarget(await client.getCode({ address: token }));
+while (dependency && deployment.dependencies.length < 20) {
+  const code = await client.getCode({ address: dependency });
+  deployment.dependencies.push({
+    address: dependency,
+    runtimeHash: keccak256(code),
+  });
+  dependency = delegateTarget(code);
+}
 // Fresh disposable local fixture avoids collisions with past unresolved rehearsals.
 const account = privateKeyToAccount(generatePrivateKey());
 await client.request({

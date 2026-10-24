@@ -139,8 +139,8 @@ export class AgentClient {
   status(id: string) {
     return this.request<Workflow>("GET", `/v1/actions/${id}`);
   }
-  activity() {
-    return this.request<Workflow[]>("GET", "/v1/actions");
+  activity(page = 0) {
+    return this.request<Workflow[]>("GET", `/v1/actions?page=${page}`);
   }
   cancel(id: string) {
     return this.request<Workflow>("POST", `/v1/actions/${id}/cancel`, {});

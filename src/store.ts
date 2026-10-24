@@ -155,6 +155,10 @@ export class Store {
     await this.event(c, action);
   }
   async event(c: PoolClient, action: Action) {
+    // Allocate publication cursors in commit order, including across different wallets.
+    await c.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended('agent_event_publication',1))",
+    );
     await c.query(
       "INSERT INTO agent_events(action_id,user_id,app_id,body) VALUES($1,$2,$3,$4)",
       [
@@ -165,10 +169,10 @@ export class Store {
       ],
     );
   }
-  async list(identity: Pick<Identity, "userId" | "appId">) {
+  async list(identity: Identity, chainId: number, page = 0) {
     const r = await this.pool.query(
-      "SELECT body FROM agent_actions WHERE user_id=$1 AND app_id=$2 ORDER BY updated_at DESC LIMIT 50",
-      [identity.userId, identity.appId],
+      "WITH scoped AS (SELECT body,updated_at FROM agent_actions WHERE user_id=$1 AND app_id=$2 AND wallet=$3 AND (body->'plan'->>'chainId')::integer=$4), selected AS (SELECT * FROM scoped WHERE body->>'status' NOT IN ('completed','cancelled','failed') UNION ALL (SELECT * FROM scoped WHERE body->>'status' IN ('completed','cancelled','failed') ORDER BY updated_at DESC LIMIT 50 OFFSET $5)) SELECT body FROM selected ORDER BY (body->>'status' IN ('completed','cancelled','failed')) ASC,updated_at DESC",
+      [identity.userId, identity.appId, identity.wallet, chainId, page * 50],
     );
     return r.rows.map((r) => publicAction(r.body));
   }
@@ -321,9 +325,9 @@ export class Store {
       "UPDATE agent_reservations SET settled=true WHERE action_id=$1 AND step_id=$2 AND settled=false RETURNING *",
       [action.id, step.id],
     );
-    for (const row of r.rows)
+    for (const row of r.rows) {
       await c.query(
-        "UPDATE agent_budgets SET reserved=reserved-$7::numeric,spent=spent+$8::numeric WHERE user_id=$1 AND wallet=$2 AND chain_id=$3 AND scope=$4 AND day=$5 AND asset=$6",
+        "UPDATE agent_budgets SET reserved=reserved-$7::numeric WHERE user_id=$1 AND wallet=$2 AND chain_id=$3 AND scope=$4 AND day=$5 AND asset=$6",
         [
           action.identity.userId,
           action.identity.wallet,
@@ -332,8 +336,20 @@ export class Store {
           row.day,
           row.asset,
           row.amount,
+        ],
+      );
+      // Release on the reservation day; charge actual spend on the settlement day.
+      await c.query(
+        "INSERT INTO agent_budgets(user_id,wallet,chain_id,scope,day,asset,spent) VALUES($1,$2,$3,$4,(now() AT TIME ZONE 'UTC')::date,$5,$6) ON CONFLICT(user_id,wallet,chain_id,scope,day,asset) DO UPDATE SET spent=agent_budgets.spent+excluded.spent",
+        [
+          action.identity.userId,
+          action.identity.wallet,
+          action.plan.chainId,
+          row.scope,
+          row.asset,
           row.asset === "STATICS" ? principal : fee,
         ],
       );
+    }
   }
 }
