@@ -158,3 +158,65 @@ export class PrivySigner implements Signer {
     return result.signed_transaction as Hex;
   }
 }
+
+// The model/API process receives no Privy secret. Fresh identity reads run behind
+// the same private worker boundary as provider access, without exposing signing.
+export class RemoteAuthentication {
+  private verified = new WeakMap<
+    Identity,
+    { signerId: string; policyId: string; installed: boolean }
+  >();
+  constructor(
+    readonly workerUrl: URL,
+    readonly fetcher: typeof fetch = fetch,
+  ) {
+    assert(
+      workerUrl.protocol === "http:" &&
+        ["127.0.0.1", "localhost"].includes(workerUrl.hostname),
+      "private_worker_url_required",
+    );
+  }
+  async verify(headers: Headers, wallet?: string): Promise<Identity> {
+    assert(wallet, "wallet_context_required");
+    const forwarded = new Headers();
+    for (const name of ["authorization", "x-agent-app", "x-agent-app-key"]) {
+      const value = headers.get(name);
+      if (value) forwarded.set(name, value);
+    }
+    forwarded.set("x-agent-wallet", wallet);
+    const result = await this.fetcher(
+      new URL("/internal/identity", this.workerUrl),
+      {
+        method: "POST",
+        headers: forwarded,
+        redirect: "error",
+        signal: AbortSignal.timeout(20_000),
+      },
+    );
+    assert(result.ok, "user_authentication_failed");
+    const body = (await result.json()) as {
+      identity: Identity;
+      signer?: { signerId: string; policyId: string; installed: boolean };
+    };
+    assert(
+      body.identity.wallet === address.parse(wallet) &&
+        body.identity.appId === headers.get("x-agent-app"),
+      "worker_identity_mismatch",
+    );
+    if (body.signer) this.verified.set(body.identity, body.signer);
+    return body.identity;
+  }
+  async signerInstalled(
+    identity: Identity,
+    signerId: string,
+    policyId: string,
+  ) {
+    const cached = this.verified.get(identity);
+    return Boolean(
+      cached &&
+      cached.signerId === signerId &&
+      cached.policyId === policyId &&
+      cached.installed,
+    );
+  }
+}

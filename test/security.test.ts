@@ -1,6 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
-import { Authentication, PrivySigner } from "../src/privy.js";
+import {
+  Authentication,
+  PrivySigner,
+  RemoteAuthentication,
+} from "../src/privy.js";
 import { TransactionVault } from "../src/crypto.js";
 import { validateSignature } from "../src/executor.js";
 import { publicIpv4, researchUrl, fetchPage } from "../src/research.js";
@@ -160,6 +164,51 @@ describe("authority boundary", () => {
       ),
     ).rejects.toThrow("policy_not_installed");
     expect(signTransaction).not.toHaveBeenCalled();
+  });
+});
+describe("private identity transport", () => {
+  it("forwards only authentication to the private worker and binds its response", async () => {
+    const identity = { userId: "app/did:one", appId: "statics", wallet };
+    const fetcher = vi.fn(async () =>
+      Response.json({
+        identity,
+        signer: { signerId: "signer", policyId: "policy", installed: true },
+      }),
+    );
+    const auth = new RemoteAuthentication(
+      new URL("http://127.0.0.1:4311"),
+      fetcher as typeof fetch,
+    );
+    const headers = new Headers({
+      authorization: "Bearer verified",
+      "x-agent-app": "statics",
+      "x-agent-app-key": "connection",
+      "x-ignored-secret": "must-not-forward",
+    });
+    const verified = await auth.verify(headers, wallet);
+    expect(await auth.signerInstalled(verified, "signer", "policy")).toBe(true);
+    expect(await auth.signerInstalled(verified, "other", "policy")).toBe(false);
+    const request = fetcher.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(request[0].pathname).toBe("/internal/identity");
+    expect((request[1].headers as Headers).get("x-ignored-secret")).toBeNull();
+    await expect(
+      auth.verify(
+        new Headers({ ...Object.fromEntries(headers), "x-agent-app": "eves" }),
+        wallet,
+      ),
+    ).rejects.toThrow("identity_mismatch");
+  });
+  it("fails closed when identity worker is unavailable or remote", async () => {
+    expect(
+      () => new RemoteAuthentication(new URL("https://public.example")),
+    ).toThrow("private_worker");
+    const auth = new RemoteAuthentication(
+      new URL("http://127.0.0.1:4311"),
+      vi.fn(async () => new Response(null, { status: 401 })) as typeof fetch,
+    );
+    await expect(auth.verify(new Headers(), wallet)).rejects.toThrow(
+      "authentication_failed",
+    );
   });
 });
 describe("research isolation", () => {

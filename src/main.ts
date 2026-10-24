@@ -1,7 +1,7 @@
 import { PrivyClient } from "@privy-io/node";
 import { Store } from "./store.js";
 import { StaticsAdapter } from "./statics.js";
-import { Authentication, PrivySigner } from "./privy.js";
+import { Authentication, PrivySigner, RemoteAuthentication } from "./privy.js";
 import { Executor } from "./executor.js";
 import { TransactionVault } from "./crypto.js";
 import { Api } from "./api.js";
@@ -18,25 +18,32 @@ if (role === "api")
   assert(
     !process.env.PRIVY_AUTHORIZATION_KEY &&
       !process.env.TRANSACTION_ENCRYPTION_KEY &&
-      !process.env.PRIVY_APP_SECRET,
+      !process.env.PRIVY_APP_SECRET &&
+      !process.env.PRIVY_READ_ONLY_APP_SECRET,
     "signing_credentials_in_api_environment",
   );
 const store = new Store(required("DATABASE_URL"));
 const adapter = StaticsAdapter.fromFile(required("DEPLOYMENTS_FILE"));
-const privy = new PrivyClient({
-  appId: required("PRIVY_APP_ID"),
-  appSecret: required(
-    role === "worker" ? "PRIVY_APP_SECRET" : "PRIVY_READ_ONLY_APP_SECRET",
-  ),
-  maxRetries: 0,
-  timeout: 15_000,
-});
-const auth = new Authentication(
-  privy,
-  required("PRIVY_APP_ID"),
-  JSON.parse(required("APP_CONNECTIONS_JSON")),
-  new Set(JSON.parse(process.env.PILOT_USERS_JSON ?? "[]")),
+const workerUrl = new URL(
+  process.env.WORKER_CONTROL_URL ?? "http://127.0.0.1:4311",
 );
+const privy =
+  role === "worker"
+    ? new PrivyClient({
+        appId: required("PRIVY_APP_ID"),
+        appSecret: required("PRIVY_APP_SECRET"),
+        maxRetries: 0,
+        timeout: 15_000,
+      })
+    : undefined;
+const auth = privy
+  ? new Authentication(
+      privy,
+      required("PRIVY_APP_ID"),
+      JSON.parse(required("APP_CONNECTIONS_JSON")),
+      new Set(JSON.parse(process.env.PILOT_USERS_JSON ?? "[]")),
+    )
+  : new RemoteAuthentication(workerUrl);
 const signerSettings =
   process.env.PRIVY_SIGNER_ID && process.env.PRIVY_POLICY_ID
     ? {
@@ -49,7 +56,7 @@ let workerRunning = false,
   stopping = false;
 if (role === "worker") {
   const signer = new PrivySigner(
-    privy,
+    privy!,
     required("PRIVY_APP_ID"),
     required("PRIVY_AUTHORIZATION_KEY"),
     required("PRIVY_SIGNER_ID"),
@@ -98,14 +105,6 @@ if (role === "worker") {
   setInterval(() => void tick(), 2000).unref();
   void tick();
 } else {
-  const workerUrl = new URL(
-    process.env.WORKER_CONTROL_URL ?? "http://127.0.0.1:4311",
-  );
-  assert(
-    workerUrl.protocol === "http:" &&
-      ["127.0.0.1", "localhost"].includes(workerUrl.hostname),
-    "private_worker_url_required",
-  );
   api.manualSignature = async (id, _identity, raw, headers) => {
     const result = await fetch(
       new URL(`/v1/actions/${id}/signature`, workerUrl),

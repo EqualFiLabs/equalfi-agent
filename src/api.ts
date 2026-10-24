@@ -108,6 +108,21 @@ export class Api {
       headers,
       headers.get("x-agent-wallet") ?? undefined,
     );
+    if (path === "/internal/identity" && method === "POST")
+      return {
+        identity,
+        signer: this.signerSettings
+          ? {
+              ...this.signerSettings,
+              installed:
+                (await this.auth.signerInstalled?.(
+                  identity,
+                  this.signerSettings.signerId,
+                  this.signerSettings.policyId,
+                )) ?? false,
+            }
+          : undefined,
+      };
     await this.store.rateLimit(identity);
     if (path === "/v1/read" && method === "POST") {
       assert(identity.appId === "statics", "app_capability_not_registered");

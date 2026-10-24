@@ -487,4 +487,20 @@ describe.skipIf(!database)("PostgreSQL workflow and authority", () => {
       await store.list({ ...identity, wallet: input.wallet }, 31337),
     ).toEqual([]);
   });
+  it("cannot reprepare a confirmed stake after a crash before completion", async () => {
+    const { a, adapter } = await execution();
+    const fresh = await store.get(a.id);
+    fresh.status = "reconciling";
+    fresh.attempts.push({
+      stepId: "stake",
+      status: "confirmed",
+      nonce: 0,
+      createdAt: Date.now(),
+    });
+    await store.transaction((c) => store.save(c, fresh));
+    const api = new Api(store, adapter, { verify: async () => identity });
+    await expect(
+      api.route("POST", `/v1/actions/${a.id}/reprepare`, new Headers(), {}),
+    ).rejects.toThrow("stake_already_confirmed");
+  });
 });
