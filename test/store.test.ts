@@ -126,7 +126,7 @@ describe.skipIf(!database)("PostgreSQL workflow and authority", () => {
     });
     const rows = (
       await store.pool.query(
-        "SELECT asset,spent::text,reserved::text FROM agent_budgets WHERE scope='*' ORDER BY asset",
+        "SELECT asset,spent::text,reserved::text FROM agent_budgets WHERE scope='*' ORDER BY asset COLLATE \"C\"",
       )
     ).rows;
     expect(rows).toEqual([
@@ -432,7 +432,7 @@ describe.skipIf(!database)("PostgreSQL workflow and authority", () => {
     await store.pool.query("UPDATE agent_reservations SET day=day-1");
     await store.transaction((c) => store.settle(c, a, step, "100", "240"));
     const current = await store.pool.query(
-      "SELECT asset,spent::text,reserved::text FROM agent_budgets WHERE scope='*' AND day=(now() AT TIME ZONE 'UTC')::date ORDER BY asset",
+      "SELECT asset,spent::text,reserved::text FROM agent_budgets WHERE scope='*' AND day=(now() AT TIME ZONE 'UTC')::date ORDER BY asset COLLATE \"C\"",
     );
     expect(current.rows).toEqual([
       { asset: "STATICS", spent: "100", reserved: "0" },
