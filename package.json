@@ -1,0 +1,35 @@
+{
+  "name": "@equalfi/agent-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --maxWorkers=2",
+    "format": "prettier --write src test packages scripts docs README.md",
+    "format:check": "prettier --check src test packages scripts docs README.md",
+    "start": "node dist/src/main.js",
+    "worker": "node dist/src/main.js worker",
+    "migrate": "node dist/src/migrate.js",
+    "sdk:pack": "npm run build && node scripts/pack-client.mjs && npm --cache .local/npm-cache pack ./.local/client --pack-destination .local/client --json"
+  },
+  "dependencies": {
+    "@mastra/core": "1.79.0",
+    "@privy-io/node": "0.36.0",
+    "@statics-protocol/sdk": "file:vendor/statics-sdk",
+    "pg": "8.23.1",
+    "viem": "2.55.10",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "24.0.0",
+    "@types/pg": "8.15.6",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10",
+    "prettier": "3.9.6"
+  }
+}

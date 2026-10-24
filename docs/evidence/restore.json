@@ -1,0 +1,8 @@
+{
+  "status": "passed",
+  "actions": 6,
+  "events": 53,
+  "reservations": 36,
+  "attemptsAndHashesEqual": true,
+  "method": "PostgreSQL17.10 pg_dump -Fc / pg_restore --no-owner; execution disabled on restored database"
+}
