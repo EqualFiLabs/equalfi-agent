@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { Address, Hex } from "viem";
+import type { Deployment } from "./statics.js";
 
 export const uint = z
   .string()
@@ -63,6 +64,7 @@ export type Step = {
   expectedAllowance?: string;
 };
 export type Plan = {
+  deployment: Deployment;
   schemaVersion: 1;
   actionVersion: 1;
   adapterVersion: string;
@@ -87,6 +89,8 @@ export type Attempt = {
     | "unresolved";
   nonce: number;
   hash?: Hex;
+  originalHash?: Hex;
+  replacementHashes?: Hex[];
   encryptedRaw?: string;
   blockNumber?: string;
   actualFee?: string;

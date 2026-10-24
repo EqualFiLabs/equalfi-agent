@@ -222,6 +222,7 @@ export class StaticsAdapter {
       "insufficient_fee_balance",
     );
     const base = {
+      deployment: d,
       schemaVersion: 1 as const,
       actionVersion: 1 as const,
       adapterVersion: "statics/1",
@@ -236,6 +237,87 @@ export class StaticsAdapter {
     };
     return { ...base, digest: digest(base) };
   }
+  async readAccount(
+    deploymentId: string,
+    wallet: Address,
+    positionId?: string,
+    cursor = "0",
+  ) {
+    const d = this.deployment(deploymentId),
+      client = this.client(d.id),
+      blockNumber = await client.getBlockNumber();
+    await this.verifyDeployment(d.id, blockNumber);
+    const [balance, native, positions] = await Promise.all([
+      client.readContract({
+        address: d.token,
+        abi: erc20Abi,
+        functionName: "balanceOf",
+        args: [wallet],
+        blockNumber,
+      }),
+      client.getBalance({ address: wallet, blockNumber }),
+      client.readContract({
+        address: d.diamond,
+        abi: staticsAbi,
+        functionName: "positionsOfOwner",
+        args: [wallet, BigInt(cursor), 25n],
+        blockNumber,
+      }),
+    ]);
+    let position: unknown = null;
+    if (positionId) {
+      const state = await this.state(
+        {
+          ...stakeInput.parse({
+            kind: "statics.stake-existing",
+            version: 1,
+            deploymentId,
+            wallet,
+            positionId,
+            amount: "1",
+            maxFeePerTransaction: "1",
+          }),
+        },
+        blockNumber,
+      );
+      const assets = await client.readContract({
+        address: d.diamond,
+        abi: staticsAbi,
+        functionName: "positionRewardAssets",
+        args: [BigInt(positionId)],
+        blockNumber,
+      });
+      assert(assets.length <= 100, "reward_asset_read_limit");
+      const rewards = assets.length
+        ? await client.readContract({
+            address: d.diamond,
+            abi: staticsAbi,
+            functionName: "pendingRewards",
+            args: [BigInt(positionId), assets],
+            account: wallet,
+            blockNumber,
+          })
+        : [];
+      position = {
+        id: positionId,
+        stake: String(state.stake),
+        allowance: String(state.allowance),
+        selectedAssets: assets,
+        pendingRewards: rewards.map(String),
+      };
+    }
+    return {
+      deploymentId,
+      chainId: d.chainId,
+      blockNumber: String(blockNumber),
+      wallet,
+      balance: String(balance),
+      native: String(native),
+      ownedPositions: positions[0].map(String),
+      nextCursor: String(positions[1]),
+      position,
+    };
+  }
   async validate(plan: Plan, step: Step): Promise<Transaction> {
     assert(
       plan.adapterVersion === "statics/1" && plan.actionVersion === 1,
@@ -244,10 +326,10 @@ export class StaticsAdapter {
     const { digest: expected, ...base } = plan;
     assert(digest(base) === expected, "plan_digest_mismatch");
     assert(plan.expiresAt > Date.now(), "plan_expired");
-    const d = this.deployment(plan.deploymentId),
+    const d = plan.deployment,
       client = this.client(d.id);
     assert(
-      plan.deploymentRevision === digest(d),
+      plan.deploymentRevision === digest(this.deployment(plan.deploymentId)),
       "deployment_revision_changed",
     );
     await this.verifyDeployment(d.id);
@@ -302,7 +384,7 @@ export class StaticsAdapter {
     receipt: TransactionReceipt,
   ): Promise<Record<string, string>> {
     assert(receipt.status === "success", "transaction_reverted");
-    const d = this.deployment(plan.deploymentId),
+    const d = plan.deployment,
       client = this.client(d.id);
     if (step.kind === "approval") {
       const logs = parseEventLogs({

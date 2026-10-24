@@ -190,7 +190,9 @@ export class Executor {
               ? "reconciling"
               : "blocked";
             action.reason =
-              error instanceof Error ? error.message : "execution_blocked";
+              error instanceof Error && /^[a-z][a-z0-9_]+$/.test(error.message)
+                ? error.message
+                : "execution_blocked";
             await atomic(c, () => this.store.save(c, action));
             return action;
           }
@@ -233,23 +235,84 @@ export class Executor {
   }
   async reconcile(c: PoolClient, action: Action, step: Step, attempt: Attempt) {
     const client = this.adapter.client(action.plan.deploymentId);
+    if (attempt.status === "signed" && action.cancelRequested) {
+      // The submission marker is committed before broadcasting. A signed-only attempt has never left this service.
+      action.status = "cancelled";
+      await atomic(c, async () => {
+        await this.store.settle(c, action, step, "0", "0");
+        await this.store.save(c, action);
+      });
+      return false;
+    }
     let receipt;
     try {
       receipt = await client.getTransactionReceipt({ hash: attempt.hash! });
     } catch {
-      // Never classify a receipt timeout or RPC invisibility as definite failure.
-      attempt.status = "unresolved";
-      action.status = "reconciling";
-      // Re-broadcast only a previously submitted transaction with unchanged bytes.
-      if (attempt.encryptedRaw && !action.cancelRequested && this.enabled()) {
-        try {
-          await this.broadcast(c, action, step, attempt);
-        } catch {
-          action.reason = "reconciliation_pending";
+      const consumed = await client.getTransactionCount({
+        address: action.identity.wallet,
+        blockTag: "latest",
+      });
+      if (consumed > attempt.nonce) {
+        const tip = await client.getBlockNumber();
+        const lower = tip > 64n ? tip - 64n : 0n;
+        // Bounded automatic recovery; older replacements remain unresolved for explicit investigation.
+        for (let number = tip > 1n ? tip - 1n : 0n; number >= lower; number--) {
+          const block = await client.getBlock({
+            blockNumber: number,
+            includeTransactions: true,
+          });
+          const replacement = block.transactions.find(
+            (tx) =>
+              typeof tx !== "string" &&
+              tx.from.toLowerCase() === action.identity.wallet &&
+              tx.nonce === attempt.nonce,
+          );
+          if (replacement && typeof replacement !== "string") {
+            const replacementReceipt = await client.getTransactionReceipt({
+              hash: replacement.hash,
+            });
+            if (replacementReceipt.blockHash !== block.hash) break;
+            attempt.originalHash ??= attempt.hash;
+            attempt.replacementHashes ??= [];
+            if (!attempt.replacementHashes.includes(replacement.hash))
+              attempt.replacementHashes.push(replacement.hash);
+            if (
+              replacement.to?.toLowerCase() !== step.transaction.to ||
+              replacement.input !== step.transaction.data ||
+              replacement.value !== BigInt(step.transaction.value)
+            ) {
+              attempt.status = "reverted";
+              action.status = "failed";
+              action.reason = "nonce_replaced_by_different_transaction";
+              await atomic(c, async () => {
+                await this.store.settle(c, action, step, "0", "0");
+                await this.store.save(c, action);
+              });
+              return false;
+            }
+            attempt.hash = replacement.hash;
+            receipt = replacementReceipt;
+            await atomic(c, () => this.store.save(c, action));
+            break;
+          }
+          if (number === 0n) break;
         }
       }
-      await atomic(c, () => this.store.save(c, action));
-      return false;
+      if (!receipt) {
+        // Never classify a receipt timeout or RPC invisibility as definite failure.
+        attempt.status = "unresolved";
+        action.status = "reconciling";
+        // Re-broadcast only a previously submitted transaction with unchanged bytes.
+        if (attempt.encryptedRaw && !action.cancelRequested && this.enabled()) {
+          try {
+            await this.broadcast(c, action, step, attempt);
+          } catch {
+            action.reason = "reconciliation_pending";
+          }
+        }
+        await atomic(c, () => this.store.save(c, action));
+        return false;
+      }
     }
     const block = await client.getBlockNumber();
     if (block < receipt.blockNumber + 1n) {
